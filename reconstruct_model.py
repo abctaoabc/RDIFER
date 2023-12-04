@@ -87,6 +87,3 @@ class MaskedAutoencoderViT(nn.Module):
         latent = self.forward_encoder(img) # Batchsize patch_size ** 2 +1 embed_dim
         mask_id = torch.tensor([1,2,3])
         feat = self.forward_decoder(img, mask_id)
-
-        # return out
-        #
