@@ -19,7 +19,7 @@ for k in model_dict.keys():
     if k in ckpt_weight:
         target_weights[k] = ckpt_weight[k].clone()
     else:
-        print(f"these weights are not in our model: {k}")
+        print(f"these weights are lack in our model: {k}")
 
 model.load_state_dict(target_weights,strict=True)
 torch.save(model.state_dict(),"./resume.pth")
