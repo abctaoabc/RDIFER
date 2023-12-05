@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
 from AdversarialNetwork import AdversarialNetwork
+from model import FERAE
 
 
 class AverageMeter(object):
@@ -181,17 +182,16 @@ def mkdir_if_missing(directory):
 def BulidModel(args):
     """Bulid Model."""
 
-    if args.Backbone == 'ResNet18':
-        if args.Network == 'Baseline':
-            model = None
+    if args.Network == 'FERAE':
+        model = FERAE()
 
-    if args.Resume_Model != 'None':
-        print('Resume Model: {}'.format(args.Resume_Model))
-        checkpoint = torch.load(args.Resume_Model, map_location='cpu')
-
-        model.load_state_dict(checkpoint, strict=False)
-    else:
-        print('No Resume Model')
+    # if args.Resume_Model != 'None':
+    #     print('Resume Model: {}'.format(args.Resume_Model))
+    #     checkpoint = torch.load(args.Resume_Model, map_location='cpu')
+    #
+    #     model.load_state_dict(checkpoint, strict=False)
+    # else:
+    #     print('No Resume Model')
 
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)

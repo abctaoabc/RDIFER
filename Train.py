@@ -1,5 +1,5 @@
 import time
-from random import random
+import random
 
 import torch.optim as optim
 
