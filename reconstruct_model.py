@@ -67,6 +67,19 @@ class MaskedAutoencoderViT(nn.Module):
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
+    def unpatchify(self, x):
+        """
+        x: (N, L, patch_size**2 *3)
+        imgs: (N, 3, H, W)
+        """
+        p = self.patch_embed.patch_size[0]
+        h = w = int(x.shape[1] ** .5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, 3))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
+        return imgs
     def forward_encoder(self, x):
         # embed patches
         x = self.patch_embed(x)
@@ -93,4 +106,4 @@ class MaskedAutoencoderViT(nn.Module):
 
         # ViT-base encoder
         latent = self.forward_encoder(img) # Batchsize patch_size**2+1 embed_dim
-
+        return latent
