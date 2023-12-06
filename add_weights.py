@@ -23,3 +23,4 @@ for k in model_dict.keys():
 
 model.load_state_dict(target_weights,strict=True)
 torch.save(model.state_dict(),"./resume.pth")
+print("Done!")

@@ -67,6 +67,33 @@ class RafDataSet(data.Dataset):
         return image, label, idx
 
 
+class domain_RafDataSet(RafDataSet):
+    def __init__(self, raf_path, phase, transform=None, basic_aug=False):
+        super().__init__(raf_path, phase, transform=transform, basic_aug=basic_aug)
+
+    def __getitem__(self, idx):
+        path = self.file_paths[idx]
+        image = cv2.imread(path)
+        image = image[:, :, ::-1]  # BGR to RGB
+        label = self.label[idx]
+        domain_label = np.int64(1)
+        # valence = self.valence[idx]
+        # arousal = self.arousal[idx]
+        # augmentation
+        if self.phase == 'train':
+            if self.basic_aug and random.uniform(0, 1) > 0.5:
+                index = random.randint(0, 1)
+                image = self.aug_func[index](image)
+                if index == 1:
+                    domain_label = np.int64(0)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        # return image, label, idx, valence, arousal
+        return image, label, idx, domain_label
+
+
 class JAFFEDataSet(data.Dataset):
     def __init__(self, jaffe_path, phase=None, transform=None, basic_aug=False):
         self.transform = transform
@@ -75,7 +102,7 @@ class JAFFEDataSet(data.Dataset):
 
         NAME_COLUMN = 0
         LABEL_COLUMN = 1
-        if phase=='test':
+        if phase == 'test':
             df = pd.read_csv(os.path.join(self.jaffe_path, 'jaffe_test.csv'), sep=',', header=None)
             file_names = df.iloc[:, NAME_COLUMN].values
             self.label = df.iloc[:, LABEL_COLUMN].values
@@ -85,7 +112,7 @@ class JAFFEDataSet(data.Dataset):
             for f in file_names:
                 path = os.path.join(self.jaffe_path, 'jaffe_alignment', f)
                 self.file_paths.append(path)
-        elif phase=='train':
+        elif phase == 'train':
             df = pd.read_csv(os.path.join(self.jaffe_path, 'jaffe_train.csv'), sep=',', header=None)
             file_names = df.iloc[:, NAME_COLUMN].values
             self.label = df.iloc[:, LABEL_COLUMN].values
@@ -105,7 +132,6 @@ class JAFFEDataSet(data.Dataset):
             for f in file_names:
                 path = os.path.join(self.jaffe_path, 'jaffe_alignment', f)
                 self.file_paths.append(path)
-
 
         self.basic_aug = basic_aug
         self.aug_func = [image_utils.flip_image, image_utils.add_gaussian_noise]
@@ -407,6 +433,7 @@ class AffectNetDataSet(data.Dataset):
 
         return image, label, idx
 
+
 class PretrainedDataSet(data.Dataset):
     def __init__(self, raf_path, phase, transform=None, basic_aug=False):
         self.phase = phase
@@ -425,10 +452,8 @@ class PretrainedDataSet(data.Dataset):
             path = os.path.join(self.pretrained_path, f)
             self.file_paths.append(path)
 
-
     def __len__(self):
         return len(self.file_paths)
-
 
     def __getitem__(self, idx):
         path = self.file_paths[idx]

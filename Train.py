@@ -1,6 +1,8 @@
 import time
 from random import random
 
+import functorch.dim
+import torch.nn
 import torch.optim as optim
 
 import torch.utils.data as data
@@ -11,7 +13,9 @@ from tqdm.contrib import tenumerate
 
 from Datasets import RafDataSet, SFEWDataSet, JAFFEDataSet, FER2013DataSet, ExpWDataSet, AffectNetDataSet, \
     FER2013PlusDataSet
+from Datasets import *
 from Utils import *
+from model import FERAE
 
 parser = argparse.ArgumentParser(description='Expression Classification Training')
 ##
@@ -23,9 +27,9 @@ parser.add_argument('--Network', type=str, default='FERAE',
                     choices=['Baseline', 'FERAE'])
 parser.add_argument('--Resume_Model', type=str, help='Resume_Model', default='None')
 parser.add_argument('--pretrained', type=str,
-                    default='/home/zhongtao/mae_pretrain_vit_base.pth',
+                    default="/home/zhongtao/code/RDIFER/resume.pth",
                     help='Pretrained weights')
-parser.add_argument('--GPU_ID', default='0', type=str, help='CUDA_VISIBLE_DEVICES')
+parser.add_argument('--device', default='cuda:0', type=str, help='CUDA_VISIBLE_DEVICES')
 
 parser.add_argument('--faceScale', type=int, default=224, help='Scale of face (default: 112)')
 parser.add_argument('--sourceDataset', type=str, default='RAFDB',
@@ -46,7 +50,7 @@ parser.add_argument('--sfew-path', type=str, default='/home/zhongtao/datasets/SF
                     help='SFEW dataset path.')
 parser.add_argument('--affectnet-path', type=str, default='/home/zhongtao/datasets/AffectNet',
                     help='AffectNet dataset path.')
-parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training (default: 64)')
+parser.add_argument('--batch_size', type=int, default=64, help='input batch size for training (default: 64)')
 parser.add_argument('--useMultiDatasets', type=str2bool, default=False, help='whether to use MultiDataset')
 
 parser.add_argument('--lr', type=float, default=0.0002)
@@ -76,26 +80,29 @@ def Train(args, model, train_dataloader, optimizer, scheduler, epoch, writer):
     loss, data_time, batch_time = AverageMeter(), AverageMeter(), AverageMeter()
 
     end = time.time()
-    for batch_i, (imgs, label, indexes) in tenumerate(train_dataloader):
-        imgs, label = imgs.cuda(), label.cuda()
+    for batch_i, (imgs, label, indexes, domain_label) in tenumerate(train_dataloader):
+        imgs, label = imgs.to(args.device), label.to(args.device)
+        domain_target = domain_label.to(args.device)
         data_time.update(time.time() - end)
 
         # Forward propagation
         end = time.time()
-        output = model(imgs)
+        feat_domain, logit_exp = model(imgs)
         batch_time.update(time.time() - end)
 
         # Compute Loss
-        # global_cls_loss_ = torch.nn.CrossEntropyLoss()(output, label)
-        global_cls_loss_ = LabelSmoothLoss()(output, label)
+        global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
+        domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        # global_cls_loss_ = LabelSmoothLoss()(output, label)
 
-        loss_ = global_cls_loss_
+        loss_ = global_cls_loss_ + domain_clc_loss_
 
         # Back Propagation
         optimizer.zero_grad()
         loss_.backward()
         optimizer.step()
 
+        output = F.softmax(logit_exp)
         # Compute accuracy, recall and loss
         Compute_Accuracy(args, output, label, acc, prec, recall)
 
@@ -146,19 +153,23 @@ def Test(args, model, test_source_dataloader, test_target_dataloader, Best_Acc_S
     loss, data_time, batch_time = AverageMeter(), AverageMeter(), AverageMeter()
 
     end = time.time()
-    for batch_index, (input, label, _) in tenumerate(iter_source_dataloader):
+    for batch_index, (input, label, _, domain_label) in tenumerate(iter_source_dataloader):
         data_time.update(time.time() - end)
 
-        input, label = input.cuda(), label.cuda()
+        imgs, label = input.to(args.device), label.to(args.device)
+        domain_target = domain_label.to(args.device)
 
         with torch.no_grad():
             end = time.time()
-            output = model(input)
+            feat_domain, logit_exp = model(imgs)
 
             batch_time.update(time.time() - end)
 
-        loss_ = LabelSmoothLoss()(output, label)
+        global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
+        domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        loss_ = global_cls_loss_ + domain_clc_loss_
 
+        output = F.softmax(logit_exp)
         # Compute accuracy, precision and recall
         Compute_Accuracy(args, output, label, acc, prec, recall)
 
@@ -198,15 +209,19 @@ def Test(args, model, test_source_dataloader, test_target_dataloader, Best_Acc_S
     for batch_index, (input, label, _) in tenumerate(iter_target_dataloader):
         data_time.update(time.time() - end)
 
-        input, label = input.cuda(), label.cuda()
+        imgs, label = input.to(args.device), label.to(args.device)
+        # domain_target = domain_label.to(args.device)
 
         with torch.no_grad():
             end = time.time()
-            output = model(input)
+            _, logit_exp = model(imgs)
             batch_time.update(time.time() - end)
 
-        loss_ = LabelSmoothLoss()(output, label)
+        global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
+        # domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        loss_ = global_cls_loss_
 
+        output = F.softmax(logit_exp)
         # Compute accuracy, precision and recall
         Compute_Accuracy(args, output, label, acc, prec, recall)
 
@@ -261,7 +276,7 @@ def main():
         sys.stdout = Logger(
             osp.join('./Logs/', '{}_{}_{}_test.txt'.format(args.sourceDataset, args.targetDataset, args.Network)))
     if args.seed:
-        random.seed(args.seed)
+        np.random.seed(args.seed)
         os.environ['PYTHONHASHSEED'] = str(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -276,8 +291,7 @@ def main():
     print('Output Path: %s' % args.OutputPath)
     print('Backbone: %s' % args.Backbone)
     print('Network: %s' % args.Network)
-    print('Resume Model: %s' % args.Resume_Model)
-    print('CUDA_VISIBLE_DEVICES: %s' % args.GPU_ID)
+    print('CUDA_USE: %s' % args.device)
 
     print('================================================')
 
@@ -309,7 +323,7 @@ def main():
                              std=[0.229, 0.224, 0.225])])
 
     if args.sourceDataset == 'RAFDB':
-        train_dataset = RafDataSet(args.raf_path, phase='train', transform=data_transforms, basic_aug=True)
+        train_dataset = domain_RafDataSet(args.raf_path, phase='train', transform=data_transforms, basic_aug=True)
     elif args.sourceDataset == 'FER2013':
         train_dataset = FER2013DataSet(args.fer2013_path, phase='train', transform=data_transforms, basic_aug=True)
     elif args.sourceDataset == 'FER2013Plus':
@@ -338,7 +352,7 @@ def main():
                              std=[0.229, 0.224, 0.225])])
 
     if args.sourceDataset == 'RAFDB':
-        val_dataset_source = RafDataSet(args.raf_path, phase='test', transform=data_transforms_val)
+        val_dataset_source = domain_RafDataSet(args.raf_path, phase='test', transform=data_transforms_val)
     elif args.sourceDataset == 'FER2013':
         val_dataset_source = FER2013DataSet(args.fer2013_path, phase='test', transform=data_transforms_val)
     elif args.sourceDataset == 'FER2013Plus':
@@ -351,7 +365,7 @@ def main():
         val_dataset_source = AffectNetDataSet(args.affectnet_path, phase='test', transform=data_transforms_val)
 
     if args.targetDataset == 'RAFDB':
-        val_dataset_target = RafDataSet(args.raf_path, phase='test', transform=data_transforms_val)
+        val_dataset_target = domain_RafDataSet(args.raf_path, phase='test', transform=data_transforms_val)
     elif args.targetDataset == 'JAFFE':
         val_dataset_target = JAFFEDataSet(args.jaffe_path, transform=data_transforms_val)
     elif args.targetDataset == 'FER2013':
@@ -386,7 +400,9 @@ def main():
 
     # Bulid Model
     print('Buliding Model...')
-    model = BulidModel(args)
+    model = FERAE().to(args.device)
+    resume_weight = torch.load(args.pretrained, map_location=args.device)
+    model.mae_encoder.load_state_dict(resume_weight)
     print('Done!')
 
     print('================================================')
