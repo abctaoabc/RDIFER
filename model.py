@@ -4,6 +4,7 @@ from UNet import UNet
 from reconstruct_model import MaskedAutoencoderViT
 from torchvision.models import resnet18
 from decompose_net import My_Model_hire as decomposer_net
+from decompose_net import *
 from functools import partial
 
 
@@ -19,6 +20,7 @@ class FERAE(nn.Module):
         self.decomposer = decomposer_net(args=None, NumOfLayer=18)
 
         self.classify = nn.Linear(512, 7)
+        self.domain_classifier = Domain_Classifier(512)
 
     def forward(self, x):
         # MAE encoder
@@ -27,5 +29,6 @@ class FERAE(nn.Module):
         x = self.mae_encoder.unpatchify(x)
         feat_domain, feat_exp = self.decomposer(x)
         logit_exp = self.classify(feat_exp)
+        out_domain = self.domain_classifier(feat_domain)
         #
-        return feat_domain, logit_exp
+        return out_domain, logit_exp
