@@ -18,7 +18,6 @@ class FERAE(nn.Module):
         # self.to_next_proj = nn.Linear(kwargs["embed_dim"], kwargs["patch_size"]**2 * kwargs["in_chans"]) TODO: add after mae_encoder, equally project
 
         self.decomposer = decomposer_net(args=None, NumOfLayer=18)
-
         self.classify = nn.Linear(512, 7)
         self.domain_classifier = Domain_Classifier(512)
 
