@@ -50,7 +50,7 @@ parser.add_argument('--sfew-path', type=str, default='/home/zhongtao/datasets/SF
                     help='SFEW dataset path.')
 parser.add_argument('--affectnet-path', type=str, default='/home/zhongtao/datasets/AffectNet',
                     help='AffectNet dataset path.')
-parser.add_argument('--batch_size', type=int, default=64, help='input batch size for training (default: 64)')
+parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training (default: 64)')
 parser.add_argument('--useMultiDatasets', type=str2bool, default=False, help='whether to use MultiDataset')
 
 parser.add_argument('--lr', type=float, default=0.0002)
@@ -87,15 +87,15 @@ def Train(args, model, train_dataloader, optimizer, scheduler, epoch, writer):
 
         # Forward propagation
         end = time.time()
-        feat_domain, logit_exp = model(imgs)
+        _, logit_exp = model(imgs)
         batch_time.update(time.time() - end)
 
         # Compute Loss
         global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
-        domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        # domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
         # global_cls_loss_ = LabelSmoothLoss()(output, label)
 
-        loss_ = global_cls_loss_ + domain_clc_loss_
+        loss_ = global_cls_loss_
 
         # Back Propagation
         optimizer.zero_grad()
@@ -161,13 +161,13 @@ def Test(args, model, test_source_dataloader, test_target_dataloader, Best_Acc_S
 
         with torch.no_grad():
             end = time.time()
-            feat_domain, logit_exp = model(imgs)
+            _, logit_exp = model(imgs)
 
             batch_time.update(time.time() - end)
 
         global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
-        domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
-        loss_ = global_cls_loss_ + domain_clc_loss_
+        # domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        loss_ = global_cls_loss_
 
         output = F.softmax(logit_exp)
         # Compute accuracy, precision and recall
