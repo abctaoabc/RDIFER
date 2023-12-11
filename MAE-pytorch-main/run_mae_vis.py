@@ -25,22 +25,22 @@ from PIL import Image
 from pathlib import Path
 
 from timm.models import create_model
-from torchvision import transforms as transforms
+
+import utils
+import modeling_pretrain
+from datasets import DataAugmentationForMAE
 
 from torchvision.transforms import ToPILImage
 from einops import rearrange
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import reconstruct_model_2
-from timm.data.constants import \
-    IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 
 def get_args():
     parser = argparse.ArgumentParser('MAE visualization reconstruction script', add_help=False)
-    parser.add_argument('--img_path', type=str, help='input image path', default='/home/zhongtao/datasets/CelebAMask-HQ/')
-    parser.add_argument('--save_path', type=str, help='save image path', default='./output')
-    parser.add_argument('--model_path', type=str, help='checkpoint path of model',
-                        default="/home/zhongtao/mae_pretrain_checkpoint.pth")
-    parser.add_argument('--img_name', type=str, default='10001.jpg')
+    parser.add_argument('--img_path', type=str, help='input image path', default='../test.png')
+    parser.add_argument('--save_path', type=str, help='save image path', default='../output')
+    parser.add_argument('--model_path', type=str, help='checkpoint path of model', default="/home/zhongtao/mae_pretrain_checkpoint.pth")
+
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size for backbone')
     parser.add_argument('--device', default='cuda:0',
@@ -53,7 +53,7 @@ def get_args():
                         help='Name of model to vis')
     parser.add_argument('--drop_path', type=float, default=0.0, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
-
+    
     return parser.parse_args()
 
 
@@ -86,38 +86,26 @@ def main(args):
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    with open(os.path.join(args.img_path+"CelebA-HQ-img", args.img_name), 'rb') as f:
+    with open(args.img_path, 'rb') as f:
         img = Image.open(f)
         img.convert('RGB')
         print("img path:", args.img_path)
 
-    parsing_path = os.path.join(args.img_path+"CelebAMaskHQ-mask", args.img_name[:-4]+".png")
-    parsing_face = Image.open(parsing_path).convert('P').resize((224,224))
-
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
 
-    mean = IMAGENET_INCEPTION_MEAN if not args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_MEAN
-    std = IMAGENET_INCEPTION_STD if not args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_STD
-
-    transform = transforms.Compose([
-        transforms.Resize([args.input_size, args.input_size]),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=torch.tensor(mean),
-            std=torch.tensor(std))
-    ])
-    img= transform(img)
+    transforms = DataAugmentationForMAE(args)
+    img, bool_masked_pos = transforms(img)
+    bool_masked_pos = torch.from_numpy(bool_masked_pos)
 
     with torch.no_grad():
-        img = img.unsqueeze(0)
+        img = img[None, :]
+        bool_masked_pos = bool_masked_pos[None, :]
         img = img.to(device, non_blocking=True)
-        mask_pos = model.parsing_mask(img, np.array(parsing_face).astype(np.int64))
-        mask_pos = torch.from_numpy(mask_pos)[None, :]
-        mask_pos = mask_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
-        outputs = model(img, mask_pos)
+        bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
+        outputs = model(img, bool_masked_pos)
 
-        # save original img
+        #save original img
         mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None]
         std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(device)[None, :, None, None]
         ori_img = img * std + mean  # in [0, 1]
@@ -125,25 +113,22 @@ def main(args):
         img.save(f"{args.save_path}/ori_img.jpg")
 
         img_squeeze = rearrange(ori_img, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c', p1=patch_size[0], p2=patch_size[0])
-        img_norm = (img_squeeze - img_squeeze.mean(dim=-2, keepdim=True)) / (
-                    img_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
+        img_norm = (img_squeeze - img_squeeze.mean(dim=-2, keepdim=True)) / (img_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
         img_patch = rearrange(img_norm, 'b n p c -> b n (p c)')
-        img_patch[mask_pos] = outputs
+        img_patch[bool_masked_pos] = outputs
 
-        # make mask
+        #make mask
         mask = torch.ones_like(img_patch)
-        mask[mask_pos] = 0
+        mask[bool_masked_pos] = 0
         mask = rearrange(mask, 'b n (p c) -> b n p c', c=3)
         mask = rearrange(mask, 'b (h w) (p1 p2) c -> b c (h p1) (w p2)', p1=patch_size[0], p2=patch_size[1], h=14, w=14)
 
-        # save reconstruction img
+        #save reconstruction img
         rec_img = rearrange(img_patch, 'b n (p c) -> b n p c', c=3)
         # Notice: To visualize the reconstruction image, we add the predict and the original mean and var of each patch. Issue #40
-        rec_img = rec_img * (img_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6) + img_squeeze.mean(
-            dim=-2, keepdim=True)
-        rec_img = rearrange(rec_img, 'b (h w) (p1 p2) c -> b c (h p1) (w p2)', p1=patch_size[0], p2=patch_size[1], h=14,
-                            w=14)
-        img = ToPILImage()(rec_img[0, :].clip(0, 0.996))
+        rec_img = rec_img * (img_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6) + img_squeeze.mean(dim=-2, keepdim=True)
+        rec_img = rearrange(rec_img, 'b (h w) (p1 p2) c -> b c (h p1) (w p2)', p1=patch_size[0], p2=patch_size[1], h=14, w=14)
+        img = ToPILImage()(rec_img[0, :].clip(0,0.996))
         img.save(f"{args.save_path}/rec_img.jpg")
 
         #save random mask img

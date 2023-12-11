@@ -1,9 +1,11 @@
 import time
 from random import random
+from collections import *
 
 import functorch.dim
 import torch.nn
 import torch.optim as optim
+import torch.nn.Funtional as F
 
 import torch.utils.data as data
 import torchvision.transforms as transforms
@@ -15,19 +17,24 @@ from Datasets import RafDataSet, SFEWDataSet, JAFFEDataSet, FER2013DataSet, ExpW
     FER2013PlusDataSet
 from Datasets import *
 from Utils import *
+from timm.models import create_model
 from model import FERAE
+from util.load_state_dict import *
+import model_finetune
 
 parser = argparse.ArgumentParser(description='Expression Classification Training')
 ##
 parser.add_argument('--Log_Name', type=str, default='train', help='Logs Name')
 parser.add_argument('--OutputPath', default='/home/zhongtao/code/RDIFER/checkpoints', type=str,
                     help='Output Path')
+parser.add_argument('--model_name', default='vit_base_patch16_224_parsing_mask', type=str, help='finetune_model')
 parser.add_argument('--Backbone', type=str, default='ResNet18', choices=['ResNet18', 'ResNet50', 'VGGNet', 'MobileNet'])
 parser.add_argument('--Network', type=str, default='FERAE',
                     choices=['Baseline', 'FERAE'])
+parser.add_argument('--model_key', default='model|module', type=str)
 parser.add_argument('--Resume_Model', type=str, help='Resume_Model', default='None')
 parser.add_argument('--pretrained', type=str,
-                    default="/home/zhongtao/code/RDIFER/resume.pth",
+                    default="/home/zhongtao/mae_pretrain_checkpoint.pth",
                     help='Pretrained weights')
 parser.add_argument('--device', default='cuda:0', type=str, help='CUDA_VISIBLE_DEVICES')
 
@@ -50,7 +57,7 @@ parser.add_argument('--sfew-path', type=str, default='/home/zhongtao/datasets/SF
                     help='SFEW dataset path.')
 parser.add_argument('--affectnet-path', type=str, default='/home/zhongtao/datasets/AffectNet',
                     help='AffectNet dataset path.')
-parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training (default: 64)')
+parser.add_argument('--batch_size', type=int, default=8, help='input batch size for training (default: 64)')
 parser.add_argument('--useMultiDatasets', type=str2bool, default=False, help='whether to use MultiDataset')
 
 parser.add_argument('--lr', type=float, default=0.0002)
@@ -87,15 +94,15 @@ def Train(args, model, train_dataloader, optimizer, scheduler, epoch, writer):
 
         # Forward propagation
         end = time.time()
-        _, logit_exp = model(imgs)
+        logit_exp, feat_domain = model(imgs)
         batch_time.update(time.time() - end)
 
         # Compute Loss
-        global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
-        # domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
-        # global_cls_loss_ = LabelSmoothLoss()(output, label)
+        # global_cls_loss_ = torch.nn.CrossEntropyLoss()(logit_exp, label)
+        domain_clc_loss_ = torch.nn.BCELoss()(feat_domain, domain_target.unsqueeze(1).float())
+        global_cls_loss_ = LabelSmoothLoss()(logit_exp, label)
 
-        loss_ = global_cls_loss_
+        loss_ = global_cls_loss_ + domain_clc_loss_
 
         # Back Propagation
         optimizer.zero_grad()
@@ -400,9 +407,81 @@ def main():
 
     # Bulid Model
     print('Buliding Model...')
-    model = FERAE().to(args.device)
-    resume_weight = torch.load(args.pretrained, map_location=args.device)
-    model.mae_encoder.load_state_dict(resume_weight)
+    # model = FERAE().to(args.device)
+    # resume_weight = torch.load(args.pretrained, map_location=args.device)
+    # model.mae_encoder.load_state_dict(resume_weight)
+    model = create_model(
+        args.model_name,
+        pretrained=False,
+        num_classes=args.class_num,
+        drop_rate=0.0,
+        drop_path_rate=0.1,
+        attn_drop_rate=0.0,
+        drop_block_rate=None,
+        use_mean_pooling=True,
+        init_scale=0.001,
+    )
+    if args.pretrained:
+        if args.pretrained.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                args.pretrained, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(args.pretrained, map_location='cpu')
+
+        print("Load ckpt from %s" % args.pretrained)
+        checkpoint_model = None
+        for model_key in args.model_key.split('|'):
+            if model_key in checkpoint:
+                checkpoint_model = checkpoint[model_key]
+                print("Load state_dict by model_key = %s" % model_key)
+                break
+        if checkpoint_model is None:
+            checkpoint_model = checkpoint
+        state_dict = model.state_dict()
+        for k in ['head.weight', 'head.bias']:
+            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                print(f"Removing key {k} from pretrained checkpoint")
+                del checkpoint_model[k]
+
+        all_keys = list(checkpoint_model.keys())
+        new_dict = OrderedDict()
+        for key in all_keys:
+            if key.startswith('backbone.'):
+                new_dict[key[9:]] = checkpoint_model[key]
+            elif key.startswith('encoder.'):
+                new_dict[key[8:]] = checkpoint_model[key]
+            else:
+                new_dict[key] = checkpoint_model[key]
+        checkpoint_model = new_dict
+
+        # interpolate position embedding
+        if 'pos_embed' in checkpoint_model:
+            pos_embed_checkpoint = checkpoint_model['pos_embed']
+            embedding_size = pos_embed_checkpoint.shape[-1]
+            num_patches = model.patch_embed.num_patches
+            num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+            # height (== width) for the checkpoint position embedding
+            orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+            # height (== width) for the new position embedding
+            new_size = int(num_patches ** 0.5)
+            # class_token and dist_token are kept unchanged
+            if orig_size != new_size:
+                print("Position interpolate from %dx%d to %dx%d" % (orig_size, orig_size, new_size, new_size))
+                extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+                # only the position tokens are interpolated
+                pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+                pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+                pos_tokens = torch.nn.functional.interpolate(
+                    pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+                pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+                new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+                checkpoint_model['pos_embed'] = new_pos_embed
+
+        load_state_dict(model, checkpoint_model, prefix="")
+        # model.load_state_dict(checkpoint_model, strict=False)
+
+    model.to(args.device)
+
     print('Done!')
 
     print('================================================')
