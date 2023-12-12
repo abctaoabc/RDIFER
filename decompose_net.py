@@ -143,7 +143,16 @@ class My_Model_hire(nn.Module):
 
         return ST, TS
 
+    def output_num(self):
+        return self.output_dim
 
+    def shuffleDomain(self, feature_exp_source, feature_exp_target, feature_dom_source, feature_dom_target):
+        b = feature_exp_source.shape[0]
+
+        ST = feature_exp_source + feature_exp_target
+        TS = feature_dom_target + feature_dom_source
+
+        return ST, TS
 
 class Decomposer(nn.Module):
     def __init__(self, feature_dim):

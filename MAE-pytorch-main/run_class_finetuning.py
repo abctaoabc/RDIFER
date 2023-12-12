@@ -8,13 +8,14 @@
 
 import argparse
 import datetime
-import numpy as np
+
 import time
 import torch
 import torch.backends.cudnn as cudnn
 import json
 import os
 import sys
+import numpy as np
 
 from pathlib import Path
 from collections import OrderedDict
@@ -44,7 +45,7 @@ def get_args():
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='vit_base_patch16_224', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='vit_base_patch16_224_baseline', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     parser.add_argument('--input_size', default=224, type=int,
@@ -143,8 +144,20 @@ def get_args():
     # Dataset parameters
     parser.add_argument('--data_path', default='/home/zhongtao/datasets/RAFDB', type=str,
                         help='dataset path')
-    parser.add_argument('--val_path', type=str, default='/home/zhongtao/datasets/ExpW',
+    parser.add_argument('--raf_path', type=str, default='/home/zhongtao/datasets/RAFDB',
+                        help='Raf-DB dataset path.')
+    parser.add_argument('--jaffe-path', type=str, default='/home/zhongtao/datasets/jaffedbase',
+                        help='JAFFE dataset path.')
+    parser.add_argument('--fer2013-path', type=str, default='/home/zhongtao/datasets/FER2013',
+                        help='FER2013 dataset path.')
+    parser.add_argument('--fer2013plus-path', type=str, default='/home/zhongtao/datasets/FER2013+',
+                        help='FER2013Plus dataset path.')
+    parser.add_argument('--expw-path', type=str, default='/home/zhongtao/datasets/ExpW',
                         help='ExpW dataset path.')
+    parser.add_argument('--sfew-path', type=str, default='/home/zhongtao/datasets/SFEW2.0',
+                        help='SFEW dataset path.')
+    parser.add_argument('--affectnet-path', type=str, default='/home/zhongtao/datasets/AffectNet',
+                        help='AffectNet dataset path.')
     parser.add_argument('--eval_data_path', default=None, type=str,
                         help='dataset path for evaluation')
     parser.add_argument('--nb_classes', default=7, type=int,
@@ -236,7 +249,16 @@ def main(args, ds_init):
                              std=[0.229, 0.224, 0.225])])
     dataset_train = domain_RafDataSet(args.data_path, phase='train', transform=data_transforms, basic_aug=True)
 
-    dataset_val = ExpWDataSet(args.val_path, phase='test', transform=data_transforms)
+    # dataset_val = ExpWDataSet(args.expw_path, phase='test', transform=data_transforms)
+    dataset_val = [
+        SFEWDataSet(args.sfew_path, phase='test', transform= data_transforms),
+        # RafDataSet(args.raf_path, phase="test", transform=data_transforms),
+        FER2013DataSet(args.fer2013_path, phase='test', transform=data_transforms),
+        # FER2013PlusDataSet(args.fer2013plus_path, phase='test', transform=data_transforms),
+        ExpWDataSet(args.expw_path, phase='test', transform=data_transforms),
+        AffectNetDataSet(args.affectnet_path, phase='test', transform=data_transforms),
+        JAFFEDataSet(args.jaffe_path, transform=data_transforms)
+        ]
 
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
@@ -273,13 +295,24 @@ def main(args, ds_init):
     )
 
     if dataset_val is not None:
-        data_loader_val = torch.utils.data.DataLoader(
-            dataset_val, sampler=sampler_val,
-            batch_size=int(1.5 * args.batch_size),
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-            drop_last=False
-        )
+        data_loader_val = []
+        for i in range(len(dataset_val)):
+            data_loader_val.append(torch.utils.data.DataLoader(
+                dataset_val[i],
+                # sampler=sampler_val,
+                batch_size=int(1.5 * args.batch_size),
+                num_workers=args.num_workers,
+                pin_memory=args.pin_mem,
+                drop_last=False
+            ))
+        # data_loader_val = torch.utils.data.DataLoader(
+        #     dataset_val,
+        #     sampler=sampler_val,
+        #     batch_size=int(1.5 * args.batch_size),
+        #     num_workers=args.num_workers,
+        #     pin_memory=args.pin_mem,
+        #     drop_last=False
+        # )
     else:
         data_loader_val = None
 
@@ -456,13 +489,15 @@ def main(args, ds_init):
         optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
 
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        exit(0)
+        for i in range(len(data_loader_val)):
+            print(f"Test on the {dataset_val[i]}")
+            test_stats = evaluate(data_loader_val[i], model, device)
+            print(f"Accuracy of the network on the {len(dataset_val[i])} test images: {test_stats['acc1']:.1f}%")
+            exit(0)
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_accuracy = 0.0
+    max_accuracy = np.zeros(len(data_loader_val))
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -474,6 +509,7 @@ def main(args, ds_init):
             log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
             lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
             num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
+            domain=False if type(model).__name__.endswith('baseline') else True
         )
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
@@ -481,25 +517,30 @@ def main(args, ds_init):
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
         if data_loader_val is not None:
-            test_stats = evaluate(data_loader_val, model, device)
-            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-            if max_accuracy < test_stats["acc1"]:
-                max_accuracy = test_stats["acc1"]
-                if args.output_dir and args.save_ckpt:
-                    utils.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+            for i in range(len(data_loader_val)):
+                print(f"Test on {dataset_val[i]}")
+                test_stats = evaluate(data_loader_val[i], model, device)
+                print(f"Accuracy of the network on the {len(dataset_val[i])} test images: {test_stats['acc1']:.1f}%")
+                if max_accuracy[i] < test_stats["acc1"]:
+                    max_accuracy[i] = test_stats["acc1"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
 
-            print(f'Max accuracy: {max_accuracy:.2f}%')
-            if log_writer is not None:
-                log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
-                log_writer.update(test_acc5=test_stats['acc5'], head="perf", step=epoch)
-                log_writer.update(test_loss=test_stats['loss'], head="perf", step=epoch)
+                print(f'Max accuracy: {max_accuracy[i]:.2f}%')
+                if log_writer is not None:
+                    log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
+                    log_writer.update(test_acc5=test_stats['acc5'], head="perf", step=epoch)
+                    log_writer.update(test_loss=test_stats['loss'], head="perf", step=epoch)
 
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         **{f'test_{k}': v for k, v in test_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
+                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                             **{f'test_{k}': v for k, v in test_stats.items()},
+                             'epoch': epoch,
+                             'n_parameters': n_parameters}
+            for i in range(len(data_loader_val)):
+                print(f"{type(dataset_val[i]).__name__}'s acc: {max_accuracy[i]}",end=" ")
+            print("")
         else:
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          # **{f'test_{k}': v for k, v in test_stats.items()},

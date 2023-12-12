@@ -10,20 +10,24 @@ import sys
 from typing import Iterable, Optional
 
 import torch
-
+from functools import partial
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 
 import utils
 
 
-def train_class_batch(model, samples, target, domain_label, criterion):
+def train_class_batch_with_domain(model, samples, target, domain_label, criterion):
     outputs_domain, outputs_exp = model(samples)
     loss = criterion(outputs_exp, target)
     loss_domain = torch.nn.BCEWithLogitsLoss()(outputs_domain, domain_label.unsqueeze(1).float())
     total_loss = loss + loss_domain
     return total_loss, outputs_exp
 
+def train_class_batch(model, samples, target, domain_label, criterion):
+    outputs_exp = model(samples)
+    loss = criterion(outputs_exp, target)
+    return loss ,outputs_exp
 
 def get_loss_scale_for_deepspeed(model):
     optimizer = model.optimizer
@@ -35,13 +39,18 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None, log_writer=None,
                     start_steps=None, lr_schedule_values=None, wd_schedule_values=None,
-                    num_training_steps_per_epoch=None, update_freq=None):
+                    num_training_steps_per_epoch=None, update_freq=None, domain=False):
     model.train(True)
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('min_lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
+
+    if domain:
+        train_batch_fun = partial(train_class_batch_with_domain, model = model, criterion = criterion)
+    else:
+        train_batch_fun = partial(train_class_batch, model = model, criterion = criterion)
 
     if loss_scaler is None:
         model.zero_grad()
@@ -71,12 +80,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         if loss_scaler is None:
             samples = samples.half()
-            loss, output = train_class_batch(
-                model, samples, targets, domain_label, criterion)
+            loss, output = train_batch_fun(samples = samples, target = targets, domain_label = domain_label)
         else:
             with torch.cuda.amp.autocast():
-                loss, output = train_class_batch(
-                    model, samples, targets,domain_label, criterion)
+                loss, output = train_batch_fun(samples = samples, target = targets, domain_label = domain_label)
 
         loss_value = loss.item()
 
@@ -168,7 +175,10 @@ def evaluate(data_loader, model, device):
 
         # compute output
         with torch.cuda.amp.autocast():
-            outputs_domain, outputs_exp  = model(images)
+            if type(model).__name__.endswith('baseline'):
+                outputs_exp = model(images)
+            else:
+                outputs_domain, outputs_exp = model(images)
             loss = criterion(outputs_exp, target)
 
         acc1, acc5 = accuracy(outputs_exp, target, topk=(1, 5))
