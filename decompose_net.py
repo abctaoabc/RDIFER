@@ -98,37 +98,36 @@ class My_Model_hire(nn.Module):
 
         x = self.pre_conv(x)
         x = self.layer1(x)
-        # temp1 = self.compose1(x)
-        # d1 = self.avgpool(temp1).view(b, -1)
-        # d1 = self.fc1(d1)
-        # x = x - temp1
+        temp1 = self.compose1(x)
+        d1 = self.avgpool(temp1).view(b, -1)
+        d1 = self.fc1(d1)
+        x = x - temp1
 
         x = self.layer2(x)
-        # temp2 = self.compose2(x)
-        # d2 = self.avgpool(temp2).view(b, -1)
-        # d2 = self.fc2(d2)
-        # x = x - temp2
+        temp2 = self.compose2(x)
+        d2 = self.avgpool(temp2).view(b, -1)
+        d2 = self.fc2(d2)
+        x = x - temp2
 
         x = self.layer3(x)
-        # temp3 = self.compose3(x)
-        # d3 = self.avgpool(temp3).view(b, -1)
-        # d3 = self.fc3(d3)
-        # x = x - temp3
+        temp3 = self.compose3(x)
+        d3 = self.avgpool(temp3).view(b, -1)
+        d3 = self.fc3(d3)
+        x = x - temp3
 
         x = self.layer4(x)
-        # temp4 = self.compose4(x)
-        # d4 = self.avgpool(temp4).view(b, -1)
-        # d4 = self.fc4(d4)
-        # x = x - temp4
+        temp4 = self.compose4(x)
+        d4 = self.avgpool(temp4).view(b, -1)
+        d4 = self.fc4(d4)
+        x = x - temp4
 
         x = self.avgpool(x)
         exp = x.view(x.size(0), -1)
 
         # 自适应
-        # domain = d1 + d2 + d3 + d4
-        # domain = domain * self.fc(domain)
-        # domain = self.relu(domain)
-        domain = torch.zeros_like(exp)
+        domain = d1 + d2 + d3 + d4
+        domain = domain * self.fc(domain)
+        domain = self.relu(domain)
 
         return domain, exp
 
@@ -144,7 +143,16 @@ class My_Model_hire(nn.Module):
 
         return ST, TS
 
+    def output_num(self):
+        return self.output_dim
 
+    def shuffleDomain(self, feature_exp_source, feature_exp_target, feature_dom_source, feature_dom_target):
+        b = feature_exp_source.shape[0]
+
+        ST = feature_exp_source + feature_exp_target
+        TS = feature_dom_target + feature_dom_source
+
+        return ST, TS
 
 class Decomposer(nn.Module):
     def __init__(self, feature_dim):

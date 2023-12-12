@@ -6,7 +6,7 @@ from torchvision.models import resnet18
 from decompose_net import My_Model_hire as decomposer_net
 from decompose_net import *
 from functools import partial
-
+import reconstruct_model_2
 
 class FERAE(nn.Module):
     def __init__(self, **kwargs):
@@ -16,6 +16,7 @@ class FERAE(nn.Module):
             decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
             mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
         # self.to_next_proj = nn.Linear(kwargs["embed_dim"], kwargs["patch_size"]**2 * kwargs["in_chans"]) TODO: add after mae_encoder, equally project
+
 
         self.decomposer = decomposer_net(args=None, NumOfLayer=18)
         self.classify = nn.Linear(512, 7)

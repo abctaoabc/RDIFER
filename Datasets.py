@@ -325,6 +325,29 @@ class SFEWDataSet(data.Dataset):
 
         return image, label, idx
 
+class domain_SFEWDataSet(SFEWDataSet):
+    def __init__(self, raf_path, phase, transform=None, basic_aug=False):
+        super().__init__(raf_path, phase, transform=transform, basic_aug=basic_aug)
+
+    def __getitem__(self, idx):
+        path = self.file_paths[idx]
+        image = cv2.imread(path)
+        image = image[:, :, ::-1]  # BGR to RGB
+        label = self.label[idx]
+        domain_label = np.int64(1)
+        # augmentation
+        if self.phase == 'train':
+            if self.basic_aug and random.uniform(0, 1) > 0.5:
+                index = random.randint(0, 1)
+                image = self.aug_func[index](image)
+                if index == 1:
+                    domain_label = np.int64(0)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        # return image, label, idx, valence, arousal
+        return image, label, idx, domain_label
 
 class ExpWDataSet(data.Dataset):
     def __init__(self, expw_path, phase, transform=None, basic_aug=False):
