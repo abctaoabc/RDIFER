@@ -262,25 +262,22 @@ class PretrainVisionTransformer(nn.Module):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
     def parsing_mask(self, img, parsing_face):
-        B,C,H,W = img.shape
+        B, C, H, W = img.shape
         num_of_class = np.max(parsing_face)
         ratio = 0.3
         patch_size = self.encoder.patch_embed.patch_size[0]
-        patch_num = img.shape[2]//patch_size
-        mask_arr = np.zeros(patch_num*patch_num)
+        patch_num = img.shape[2] // patch_size
+        mask_arr = np.zeros(patch_num * patch_num)
         mask_part = np.random.choice(np.arange(1, 13), 8, replace=False)
         # mask_part = np.arange(1, 13)
         for pi in mask_part:
-            for i in range(img.shape[2]//patch_size):
-                for j in range(img.shape[3]//patch_size):
-                    patch_part = parsing_face[i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size]
+            for i in range(img.shape[2] // patch_size):
+                for j in range(img.shape[3] // patch_size):
+                    patch_part = parsing_face[i * patch_size:(i + 1) * patch_size, j * patch_size:(j + 1) * patch_size]
                     count = np.sum(patch_part == pi)
-                    if count/(patch_size*patch_size) >= ratio:
-                        mask_arr[i*patch_num + j] = 1
+                    if count / (patch_size * patch_size) >= ratio:
+                        mask_arr[i * patch_num + j] = 1
         return mask_arr
-
-
-
 
     def patchif(self, imgs):
         p = self.encoder.patch_embed.patch_size[0]
@@ -289,8 +286,9 @@ class PretrainVisionTransformer(nn.Module):
         h = w = imgs.shape[2] // p
         x = imgs.reshape(shape=(imgs.shape[0], 3, h, p, w, p))
         x = torch.einsum('nchpwq->nhwpqc', x)
-        x = x.reshape(shape=(imgs.shape[0], h * w, p**2 * 3))
+        x = x.reshape(shape=(imgs.shape[0], h * w, p ** 2 * 3))
         return x
+
     def forward(self, x, mask):
 
         x_vis = self.encoder(x, mask)  # [B, N_vis, C_e]

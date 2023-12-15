@@ -15,6 +15,7 @@ from timm.data.constants import \
 
 from timm.data import create_transform
 
+from Datasets import PretrainedDataSet
 from masking_generator import RandomMaskingGenerator
 from dataset_folder import ImageFolder
 
@@ -34,17 +35,18 @@ class DataAugmentationForMAE(object):
                 std=torch.tensor(std))
         ])
 
-        self.masked_position_generator = RandomMaskingGenerator(
-            args.window_size, args.mask_ratio
-        )
+        # self.masked_position_generator = RandomMaskingGenerator(
+        #     args.window_size, args.mask_ratio
+        # )
 
     def __call__(self, image):
-        return self.transform(image), self.masked_position_generator()
+        # return self.transform(image), self.masked_position_generator()
+        return self.transform(image)
 
     def __repr__(self):
         repr = "(DataAugmentationForBEiT,\n"
         repr += "  transform = %s,\n" % str(self.transform)
-        repr += "  Masked position generator = %s,\n" % str(self.masked_position_generator)
+        # repr += "  Masked position generator = %s,\n" % str(self.masked_position_generator)
         repr += ")"
         return repr
 
@@ -52,7 +54,7 @@ class DataAugmentationForMAE(object):
 def build_pretraining_dataset(args):
     transform = DataAugmentationForMAE(args)
     print("Data Aug = %s" % str(transform))
-    return ImageFolder(args.data_path, transform=transform)
+    return PretrainedDataSet(args.data_path, transform=transform)
 
 
 def build_dataset(is_train, args):

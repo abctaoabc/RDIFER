@@ -1,10 +1,12 @@
 import os
 import random
 
+import PIL.Image
 import cv2
 import numpy as np
 import pandas as pd
 import torch.utils.data as data
+from torchvision import transforms
 
 import image_utils
 
@@ -325,6 +327,7 @@ class SFEWDataSet(data.Dataset):
 
         return image, label, idx
 
+
 class domain_SFEWDataSet(SFEWDataSet):
     def __init__(self, raf_path, phase, transform=None, basic_aug=False):
         super().__init__(raf_path, phase, transform=transform, basic_aug=basic_aug)
@@ -348,6 +351,7 @@ class domain_SFEWDataSet(SFEWDataSet):
 
         # return image, label, idx, valence, arousal
         return image, label, idx, domain_label
+
 
 class ExpWDataSet(data.Dataset):
     def __init__(self, expw_path, phase, transform=None, basic_aug=False):
@@ -458,32 +462,34 @@ class AffectNetDataSet(data.Dataset):
 
 
 class PretrainedDataSet(data.Dataset):
-    def __init__(self, raf_path, phase, transform=None, basic_aug=False):
-        self.phase = phase
+    def __init__(self, pretrained_path, transform=None, basic_aug=False):
         self.transform = transform
-        self.raf_path = raf_path
+        self.pretrained_path = pretrained_path
 
         NAME_COLUMN = 0
-        LABEL_COLUMN = 1
         df = pd.read_csv(os.path.join(self.pretrained_path, 'name.csv'), sep=',', header=None)
-        dataset = df[df[NAME_COLUMN].str.startswith('train')]
-        file_names = dataset.iloc[:, NAME_COLUMN].values
+        file_names = df.iloc[:, NAME_COLUMN].values
 
         self.file_paths = []
         # use raf aligned images for training/testing
-        for f in file_names:
-            path = os.path.join(self.pretrained_path, f)
+        for i in range(len(file_names)):
+            path = os.path.join(self.pretrained_path, 'CelebA-HQ-img', str(i) + '.jpg')
             self.file_paths.append(path)
+        self.mask_paths = []
+        for i in range(len(file_names)):
+            path = os.path.join(self.pretrained_path, 'CelebAMaskHQ-mask', str(i) + '.png')
+            self.mask_paths.append(path)
 
     def __len__(self):
         return len(self.file_paths)
 
     def __getitem__(self, idx):
-        path = self.file_paths[idx]
-        image = cv2.imread(path)
-        image = image[:, :, ::-1]  # BGR to RGB
+        file_path = self.file_paths[idx]
+        mask_path = self.mask_paths[idx]
+        image = PIL.Image.open(file_path).convert("RGB")
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
 
         if self.transform is not None:
             image = self.transform(image)
 
-        return image, idx
+        return image, mask, idx
