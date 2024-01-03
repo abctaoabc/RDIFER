@@ -20,7 +20,8 @@ class Baseline(nn.Module):
             resnet = models.resnet18(pretrained=True)
         else:
             resnet = models.resnet50(pretrained=True)
-
+        weights = torch.load("/home/zhongtao/code/EAC/model/resnet18_msceleb.pth")["state_dict"]
+        resnet.load_state_dict(weights)
         self.pre_conv = nn.Sequential(*list(resnet.children())[0:4]).cuda()
         self.layer1 = nn.Sequential(*list(resnet.children())[4:5]).cuda()
         self.layer2 = nn.Sequential(*list(resnet.children())[5:6]).cuda()

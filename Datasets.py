@@ -460,6 +460,29 @@ class AffectNetDataSet(data.Dataset):
 
         return image, label, idx
 
+class domain_AffectNetDataSet(AffectNetDataSet):
+    def __init__(self, affectnet_path, phase, transform=None, basic_aug=False):
+        super().__init__(affectnet_path, phase, transform=transform, basic_aug=basic_aug)
+
+    def __getitem__(self, idx):
+        path = self.file_paths[idx]
+        image = cv2.imread(path)
+        image = image[:, :, ::-1]  # BGR to RGB
+        label = self.label[idx]
+        domain_label = np.int64(1)
+
+        if self.phase == 'train':
+            if self.basic_aug and random.uniform(0, 1) > 0.5:
+                index = random.randint(0, 1)
+                image = self.aug_func[index](image)
+                if index == 1:
+                    domain_label = np.int64(0)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        # return image, label, idx, valence, arousal
+        return image, label, idx, domain_label
 
 class PretrainedDataSet(data.Dataset):
     def __init__(self, pretrained_path, transform=None, basic_aug=False):
@@ -487,9 +510,9 @@ class PretrainedDataSet(data.Dataset):
         file_path = self.file_paths[idx]
         mask_path = self.mask_paths[idx]
         image = PIL.Image.open(file_path).convert("RGB")
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        mask = PIL.Image.open(mask_path).convert("P").resize((224,224))
 
         if self.transform is not None:
             image = self.transform(image)
 
-        return image, mask, idx
+        return image, np.array(mask), idx

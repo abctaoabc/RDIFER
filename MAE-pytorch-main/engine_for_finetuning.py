@@ -21,7 +21,7 @@ def train_class_batch_with_domain(model, samples, target, domain_label, criterio
     outputs_domain, outputs_exp = model(samples)
     loss = criterion(outputs_exp, target)
     loss_domain = torch.nn.BCEWithLogitsLoss()(outputs_domain, domain_label.unsqueeze(1).float())
-    total_loss = loss + loss_domain
+    total_loss = loss + 5*loss_domain
     return total_loss, outputs_exp
 
 def train_class_batch(model, samples, target, domain_label, criterion):
@@ -175,10 +175,10 @@ def evaluate(data_loader, model, device):
 
         # compute output
         with torch.cuda.amp.autocast():
-            if type(model).__name__.endswith('baseline'):
-                outputs_exp = model(images)
-            else:
+            if type(model).__name__.endswith('domain'):
                 outputs_domain, outputs_exp = model(images)
+            else:
+                outputs_exp = model(images)
             loss = criterion(outputs_exp, target)
 
         acc1, acc5 = accuracy(outputs_exp, target, topk=(1, 5))

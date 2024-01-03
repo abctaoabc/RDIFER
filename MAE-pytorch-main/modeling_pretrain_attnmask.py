@@ -6,30 +6,32 @@
 # https://github.com/facebookresearch/dino
 # --------------------------------------------------------'
 import math
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from functools import partial
 
-from util.module import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table
+from einops import rearrange
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from torch import tensor
+
+from modeling_finetune import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table, Attention, Mlp
 from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_ as __call_trunc_normal_
 
 attr = ['background', 'skin', 'nose', 'eye_g', 'l_eye', 'r_eye', 'l_brow', 'r_brow', 'l_ear', 'r_ear', 'mouth', 'u_lip',
         'l_lip', 'hair', 'hat', 'ear_r', 'neck_l', 'neck', 'cloth']
-ratio_dict = {'skin': 0.5, 'l_brow': 0.2, 'r_brow': 0.2, 'l_eye': 0.3, 'r_eye': 0.3, 'eye_g': 0.5, 'l_ear': 0.3,
-              'r_ear': 0.3, 'ear_r': 0.2,
-              'nose': 0.2, 'mouth': 0.4, 'u_lip': 0.1, 'l_lip': 0.1}
+ratio_dict = {'skin': 0.7, 'l_brow': 0.1, 'r_brow': 0.1, 'l_eye': 0.2, 'r_eye': 0.2, 'eye_g': 0.3, 'l_ear': 0.2,
+              'r_ear': 0.2, 'ear_r': 0.1,
+              'nose': 0.2, 'mouth': 0.3, 'u_lip': 0.1, 'l_lip': 0.1}
 
 def trunc_normal_(tensor, mean=0., std=1.):
     __call_trunc_normal_(tensor, mean=mean, std=std, a=-std, b=std)
 
 
 __all__ = [
-    'pretrain_mae_base_patch16_224_parsing_mask',
-    'pretrain_mae_large_patch16_224',
+    'pretrain_mae_base_patch16_224',
 ]
 
 
@@ -67,6 +69,11 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.norm = norm_layer(embed_dim)
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
+        self.mask_attn = Attention(
+            embed_dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
+            attn_drop=attn_drop_rate, proj_drop=drop_rate)
+        self.mask_norm = norm_layer(embed_dim)
+
         if use_learnable_pos_emb:
             trunc_normal_(self.pos_embed, std=.02)
 
@@ -96,8 +103,15 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask):
+    def forward_features(self, x):
         x = self.patch_embed(x)
+        B, patch_num = x.shape[0], x.shape[1]
+        mask_attn = self.mask_attn(self.mask_norm(x))
+        mask_attn = mask_attn.mean(2).reshape(B, patch_num)
+        mask_attn = torch.sigmoid(mask_attn)
+        mask_index = torch.argsort(mask_attn, dim = 1, descending = True)[:, :int(0.3*patch_num)]
+        mask = torch.zeros_like(mask_attn, dtype = torch.bool)  # 1-> mask 0-> no mask
+        mask.scatter_(1, mask_index, True)
 
         # cls_tokens = self.cls_token.expand(batch_size, -1, -1) 
         # x = torch.cat((cls_tokens, x), dim=1)
@@ -110,13 +124,12 @@ class PretrainVisionTransformerEncoder(nn.Module):
             x_vis = blk(x_vis)
 
         x_vis = self.norm(x_vis)
-        return x_vis
+        return x_vis, mask, mask_attn
 
-    def forward(self, x, mask):
-        x = self.forward_features(x, mask)
+    def forward(self, x):
+        x, mask, mask_attn = self.forward_features(x)
         x = self.head(x)
-        return x
-
+        return x, mask, mask_attn
 
 class PretrainVisionTransformerDecoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -178,11 +191,9 @@ class PretrainVisionTransformerDecoder(nn.Module):
 
         return x
 
-
 class PretrainVisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
-
     def __init__(self,
                  img_size=224,
                  patch_size=16,
@@ -242,6 +253,8 @@ class PretrainVisionTransformer(nn.Module):
             norm_layer=norm_layer,
             init_values=init_values)
 
+        # self.generate_mask = GenerateMask()
+
         self.encoder_to_decoder = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=False)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
@@ -266,59 +279,51 @@ class PretrainVisionTransformer(nn.Module):
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
-    def parsing_mask(self, img, parsing_face):
-        B, C, H, W = img.shape
-        # parsing_face = torch.tensor(parsing_face)
-
+    def patch(self, images):
+        mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(images.device)[None, :, None, None]
+        std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(images.device)[None, :, None, None]
         patch_size = self.encoder.patch_embed.patch_size[0]
-        patch_num = H//patch_size
-        token_num = patch_num * patch_num
-        mask_arr = torch.ones([patch_num,patch_num], dtype = torch.int16)
-        mask_part = np.random.choice(np.arange(2, 13), 8, replace=False)
+        unnorm_images = images * std + mean  # in [0, 1]
 
-        def unfold(arr, size, stride):
-            shape = arr.shape
-            unfolded_shape = ((shape[0] - size) // stride + 1, (shape[1] - size) // stride + 1, size, size)
-            strides = (stride * shape[1] * arr.itemsize, stride * arr.itemsize, shape[1] * arr.itemsize, arr.itemsize)
-            return np.lib.stride_tricks.as_strided(arr, shape=unfolded_shape, strides=strides)
+        images_squeeze = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c', p1=patch_size,
+                                   p2=patch_size)
+        images_norm = (images_squeeze - images_squeeze.mean(dim=-2, keepdim=True)
+                       ) / (images_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
+        # we find that the mean is about 0.48 and standard deviation is about 0.08.
+        images_patch = rearrange(images_norm, 'b n p c -> b n (p c)')
 
-        patch_face = unfold(parsing_face, patch_size, patch_size)
+        return images_patch
 
-        for pi in mask_part:
-            count = np.sum(patch_face == pi,axis=(2,3))
-            mask_arr *= (count < 0.1 * (patch_size * patch_size))
+    def parsing_loss(self, mask, parsing_face):
+        patch_size = self.encoder.patch_embed.patch_size[0]
+        mask_part  = torch.arange(11)+2 # 2~12 mask_part
 
-        mask_arr = ~(np.bool_(mask_arr))
+        patch_face = parsing_face.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)
+        count = torch.sum((patch_face[...,None] == mask_part).any(dim= -1), dim=(3,4))
 
-        return mask_arr
+        target = (count / (patch_size*patch_size)).to(mask.device)
+        target = target.flatten(1)
+        loss = nn.L1Loss()(mask, target)
 
-    def patchif(self, imgs):
-        p = self.encoder.patch_embed.patch_size[0]
-        assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
+        return loss
 
-        h = w = imgs.shape[2] // p
-        x = imgs.reshape(shape=(imgs.shape[0], 3, h, p, w, p))
-        x = torch.einsum('nchpwq->nhwpqc', x)
-        x = x.reshape(shape=(imgs.shape[0], h * w, p ** 2 * 3))
-        return x
+    def forward(self, x):
 
-    def forward(self, x, mask):
-
-        x_vis = self.encoder(x, mask)  # [B, N_vis, C_e]
+        x_vis, mask, mask_attn = self.encoder(x)  # [B, N_vis, C_e]
         x_vis = self.encoder_to_decoder(x_vis)  # [B, N_vis, C_d]
 
         B, N, C = x_vis.shape
 
-        # we don't unshuffle the correct visible token order, 
+        # we don't unshuffle the correct visible token order,
         # but shuffle the pos embedding accorddingly.
         expand_pos_embed = self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
         pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
         pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1)
         # notice: if N_mask==0, the shape of x is [B, N_mask, 3 * 16 * 16]
-        x = self.decoder(x_full, pos_emd_mask.shape[1])  # [B, N_mask, 3 * 16 * 16]
+        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
 
-        return x
+        return x, mask, mask_attn
 
 
 @register_model
@@ -348,7 +353,7 @@ def pretrain_mae_small_patch16_224(pretrained=False, **kwargs):
 
 
 @register_model
-def pretrain_mae_base_patch16_224_parsing_mask(pretrained=False, **kwargs):
+def pretrain_mae_base_patch16_224(pretrained=False, **kwargs):
     model = PretrainVisionTransformer(
         img_size=224,
         patch_size=16,
@@ -360,32 +365,6 @@ def pretrain_mae_base_patch16_224_parsing_mask(pretrained=False, **kwargs):
         decoder_embed_dim=384,
         decoder_depth=4,
         decoder_num_heads=6,
-        mlp_ratio=4,
-        qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        checkpoint = torch.load(
-            kwargs["init_ckpt"], map_location="cpu"
-        )
-        model.load_state_dict(checkpoint["model"])
-    return model
-
-
-@register_model
-def pretrain_mae_large_patch16_224(pretrained=False, **kwargs):
-    model = PretrainVisionTransformer(
-        img_size=224,
-        patch_size=16,
-        encoder_embed_dim=1024,
-        encoder_depth=24,
-        encoder_num_heads=16,
-        encoder_num_classes=0,
-        decoder_num_classes=768,
-        decoder_embed_dim=512,
-        decoder_depth=8,
-        decoder_num_heads=8,
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),

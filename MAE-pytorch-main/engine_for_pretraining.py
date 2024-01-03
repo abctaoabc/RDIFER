@@ -44,27 +44,28 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
         # bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
 
         # import pdb; pdb.set_trace()
-        # with torch.no_grad():
-        #     # calculate the predict label
-        #     mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None]
-        #     std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(device)[None, :, None, None]
-        #     unnorm_images = images * std + mean  # in [0, 1]
-        #
-        #     if normlize_target:
-        #         images_squeeze = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c', p1=patch_size, p2=patch_size)
-        #         images_norm = (images_squeeze - images_squeeze.mean(dim=-2, keepdim=True)
-        #             ) / (images_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
-        #         # we find that the mean is about 0.48 and standard deviation is about 0.08.
-        #         images_patch = rearrange(images_norm, 'b n p c -> b n (p c)')
-        #     else:
-        #         images_patch = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=patch_size, p2=patch_size)
-        #
-        #     B, _, C = images_patch.shape
-        #     labels = images_patch[bool_masked_pos].reshape(B, -1, C)
+        with torch.no_grad():
+            # calculate the predict label
+            mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None]
+            std = torch.as_tensor(IMAGENET_DEFAULT_STD).to(device)[None, :, None, None]
+            unnorm_images = images * std + mean  # in [0, 1]
+
+            if normlize_target:
+                images_squeeze = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2) c', p1=patch_size, p2=patch_size)
+                images_norm = (images_squeeze - images_squeeze.mean(dim=-2, keepdim=True)
+                    ) / (images_squeeze.var(dim=-2, unbiased=True, keepdim=True).sqrt() + 1e-6)
+                # we find that the mean is about 0.48 and standard deviation is about 0.08.
+                images_patch = rearrange(images_norm, 'b n p c -> b n (p c)')
+            else:
+                images_patch = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=patch_size, p2=patch_size)
+
 
         with torch.cuda.amp.autocast():
-            outputs = model(images, masks)
-            loss = loss_func(input=outputs, target=labels)
+            outputs, bool_masked_pos, masked_prob = model(images)
+            # outputs, bool_masked_pos = model(images, masks)
+            B, _, C = images_patch.shape
+            labels = images_patch[bool_masked_pos].reshape(B, -1, C)
+            loss = loss_func(input=outputs, target=labels) + model.parsing_loss(masked_prob, masks)
 
         loss_value = loss.item()
 

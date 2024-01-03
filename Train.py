@@ -20,7 +20,6 @@ from Utils import *
 from timm.models import create_model
 from model import FERAE
 from util.load_state_dict import *
-import vit_model_mask
 
 parser = argparse.ArgumentParser(description='Expression Classification Training')
 ##

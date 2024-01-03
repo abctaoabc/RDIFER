@@ -16,10 +16,15 @@ from einops import rearrange
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torch import tensor
 
-from modeling_finetune import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table
+from modeling_finetune import Block, _cfg, PatchEmbed, get_sinusoid_encoding_table, Attention, Mlp
 from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_ as __call_trunc_normal_
 
+attr = ['background', 'skin', 'nose', 'eye_g', 'l_eye', 'r_eye', 'l_brow', 'r_brow', 'l_ear', 'r_ear', 'mouth', 'u_lip',
+        'l_lip', 'hair', 'hat', 'ear_r', 'neck_l', 'neck', 'cloth']
+ratio_dict = {'skin': 0.7, 'l_brow': 0.1, 'r_brow': 0.1, 'l_eye': 0.2, 'r_eye': 0.2, 'eye_g': 0.3, 'l_ear': 0.2,
+              'r_ear': 0.2, 'ear_r': 0.1,
+              'nose': 0.2, 'mouth': 0.3, 'u_lip': 0.1, 'l_lip': 0.1}
 
 def trunc_normal_(tensor, mean=0., std=1.):
     __call_trunc_normal_(tensor, mean=mean, std=std, a=-std, b=std)
@@ -102,8 +107,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
 
         B, _, C = x.shape
-        # x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
-        x_vis = torch.where(mask.unsqueeze(2).bool().to(x.device), x, torch.zeros_like(x))  # ~mask means visible
+        x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
 
         for blk in self.blocks:
             x_vis = blk(x_vis)
@@ -294,42 +298,47 @@ class PretrainVisionTransformer(nn.Module):
     def parsing_mask(self, img, parsing_face):
         B, C, H, W = img.shape
         patch_size = self.encoder.patch_embed.patch_size[0]
-        patch_num = self.encoder.patch_embed.num_patches
-        ratio = 0.3
-        mask_arr = torch.zeros((B, patch_num), dtype=torch.int16)
-        mask_part = torch.randperm(13)[ :8] + 1
+        patch_num = H//patch_size
+        mask_arr = torch.ones([B,patch_num,patch_num], dtype = torch.int16)
+        mask_part = torch.randperm(11)[ :8]+2
 
-        for bs in range(B):
-            for pi in mask_part:
-                for i in range(img.shape[2] // patch_size):
-                    for j in range(img.shape[3] // patch_size):
-                        patch_part = parsing_face[bs, i * patch_size: (i + 1) * patch_size, j * patch_size: (j + 1) * patch_size]
-                        count = torch.sum(patch_part == pi)
-                        if count / (patch_size * patch_size) >= ratio:
-                            mask_arr[bs, i * int(math.sqrt(patch_num)) + j] = 1
+        patch_face = parsing_face.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)
+        for pi in mask_part:
+            count = torch.sum(patch_face == pi, dim=(3,4))
+            mask_arr *= (count < ratio_dict[attr[pi]] * (patch_size * patch_size))
+
+        mask_arr = ~(mask_arr.type(torch.bool))
 
         return mask_arr
 
     def forward(self, x, parsing):
-        mask = self.parsing_mask(x, parsing)
+        mask = self.parsing_mask(x, parsing).flatten(1).to(torch.bool)
+
+        min_mask_num = torch.min(torch.sum(mask, dim = 1))
+        if min_mask_num == 0:
+            zero_sample_index = torch.where(torch.sum(mask, dim = 1) == 0)[0][0]
+            random_mask_index = torch.randint(0,mask.shape[1],()) #TODO:need to be solved exclude the uniform random mask
+            mask[zero_sample_index][random_mask_index] = True
+            min_mask_num +=1
+        for i in range(mask.shape[0]):
+            True_index = torch.where(mask[i] == True)[0]
+            mask[i][True_index[torch.randperm(True_index.numel())[:True_index.numel()-min_mask_num]]] = False
 
         x_vis = self.encoder(x, mask)  # [B, N_vis, C_e]
         x_vis = self.encoder_to_decoder(x_vis)  # [B, N_vis, C_d]
 
         B, N, C = x_vis.shape
 
-        # we don't unshuffle the correct visible token order, 
+        # we don't unshuffle the correct visible token order,
         # but shuffle the pos embedding accorddingly.
         expand_pos_embed = self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
-        # pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
-        # pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
-        pos_emd_vis = torch.where(mask.unsqueeze(2).bool().to(x.device), expand_pos_embed, torch.zeros_like(expand_pos_embed))
-        pos_emd_mask = torch.where(~mask.unsqueeze(2).bool().to(x.device), expand_pos_embed, torch.zeros_like(expand_pos_embed))
+        pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
+        pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1)
         # notice: if N_mask==0, the shape of x is [B, N_mask, 3 * 16 * 16]
-        x = self.decoder(x_full, pos_emd_mask.shape[1])  # [B, N_mask, 3 * 16 * 16]
+        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
 
-        return x
+        return x, mask
 
 
 @register_model
