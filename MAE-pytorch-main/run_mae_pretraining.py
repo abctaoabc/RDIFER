@@ -8,6 +8,8 @@
 
 import argparse
 import datetime
+import sys
+
 import numpy as np
 import time
 import torch
@@ -20,18 +22,20 @@ from pathlib import Path
 from timm.models import create_model
 from optim_factory import create_optimizer
 
-from datasets import build_pretraining_dataset
 from engine_for_pretraining import train_one_epoch
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
-import modeling_pretrain
+import modeling_pretrain_attnmask
 
+sys.path.append("..")
+from datasets import build_pretraining_dataset
 
 def get_args():
     parser = argparse.ArgumentParser('MAE pre-training script', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int)
-    parser.add_argument('--epochs', default=300, type=int)
-    parser.add_argument('--save_ckpt_freq', default=10, type=int)
+    parser.add_argument('--epochs', default=350, type=int)
+    parser.add_argument('--save_ckpt_freq', default=50, type=int)
+    # parser.add_argument('--resume_path', default="/home/zhongtao/mae_pretrain_checkpoint.pth", help= 'resume model!')
 
     # Model parameters
     parser.add_argument('--model', default='pretrain_mae_base_patch16_224', type=str, metavar='MODEL',
@@ -89,14 +93,14 @@ def get_args():
                         help='dataset path')
     parser.add_argument('--imagenet_default_mean_and_std', default=True, action='store_true')
 
-    parser.add_argument('--output_dir', default='/home/zhongtao/code/RDIFER/checkpoints',
+    parser.add_argument('--output_dir', default="/home/zhongtao/code/RDIFER/200w_pretrained_checkpoints_v4_0.3",
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda',
+    parser.add_argument('--device', default='cuda:1',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default='', help='resume from checkpoint')
+    parser.add_argument('--resume', default="/home/zhongtao/code/RDIFER/mae_pretrain_checkpoint.pth", help='resume from checkpoint')
     parser.add_argument('--auto_resume', action='store_true')
     parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
     parser.set_defaults(auto_resume=True)
@@ -183,6 +187,9 @@ def main(args):
         drop_last=True,
         worker_init_fn=utils.seed_worker
     )
+
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
 
     model.to(device)
     model_without_ddp = model

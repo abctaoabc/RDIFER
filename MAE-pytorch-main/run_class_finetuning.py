@@ -27,7 +27,7 @@ from timm.utils import ModelEma
 from optim_factory import create_optimizer, get_parameter_groups, LayerDecayValueAssigner
 import torchvision.transforms as transforms
 
-from datasets import build_dataset
+# from datasets import build_dataset
 from engine_for_finetuning import train_one_epoch, evaluate
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
@@ -35,12 +35,11 @@ from scipy import interpolate
 import modeling_finetune
 sys.path.append("..")
 from Datasets import *
-# os.environ['CUDA_VISIBLE_DEVICES'] = "2"
 
 def get_args():
     parser = argparse.ArgumentParser('MAE fine-tuning and evaluation script for image classification', add_help=False)
-    parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--epochs', default=30, type=int)
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--epochs', default=120, type=int)
     parser.add_argument('--update_freq', default=1, type=int)
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
 
@@ -133,7 +132,7 @@ def get_args():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default="/home/zhongtao/mae_pretrain_checkpoint.pth", help='finetune from checkpoint')
+    parser.add_argument('--finetune', default="/home/zhongtao/code/RDIFER/pretrain_mae_vit_base_mask_0.75_400e.pth", help='finetune from checkpoint')
     parser.add_argument('--model_key', default='model|module', type=str)
     parser.add_argument('--model_prefix', default='', type=str)
     parser.add_argument('--init_scale', default=0.001, type=float)
@@ -170,9 +169,9 @@ def get_args():
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
                         help='path where to tensorboard log')
-    parser.add_argument('--device', default='cuda',
+    parser.add_argument('--device', default='cuda:0',
                         help='device to use for training / testing')
-    parser.add_argument('--seed', default=0, type=int)
+    parser.add_argument('--seed', default=15 , type=int)
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
     parser.add_argument('--auto_resume', action='store_true')
@@ -233,10 +232,19 @@ def main(args, ds_init):
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
-    seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    # random.seed(seed)
+    # seed = args.seed + utils.get_rank()
+    # torch.manual_seed(seed)
+    # np.random.seed(seed)
+    if args.seed:
+        random.seed(args.seed)
+        os.environ['PYTHONHASHSEED'] = str(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        print('set seed:{}'.format(args.seed))
 
     cudnn.benchmark = True
 
@@ -253,11 +261,11 @@ def main(args, ds_init):
     dataset_val = [
         SFEWDataSet(args.sfew_path, phase='test', transform= data_transforms),
         # RafDataSet(args.raf_path, phase="test", transform=data_transforms),
-        FER2013DataSet(args.fer2013_path, phase='test', transform=data_transforms),
-        # FER2013PlusDataSet(args.fer2013plus_path, phase='test', transform=data_transforms),
+        FER2013PlusDataSet(args.fer2013plus_path, phase='test', transform=data_transforms),
         ExpWDataSet(args.expw_path, phase='test', transform=data_transforms),
         AffectNetDataSet(args.affectnet_path, phase='test', transform=data_transforms),
-        JAFFEDataSet(args.jaffe_path, transform=data_transforms)
+        JAFFEDataSet(args.jaffe_path, transform=data_transforms),
+        FER2013DataSet(args.fer2013_path, phase='test', transform=data_transforms)
         ]
 
     if True:  # args.distributed:
@@ -509,7 +517,7 @@ def main(args, ds_init):
             log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
             lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
             num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
-            domain=False if type(model).__name__.endswith('baseline') else True
+            domain=True if type(model).__name__.endswith('domain') else False
         )
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
@@ -539,8 +547,8 @@ def main(args, ds_init):
                              'epoch': epoch,
                              'n_parameters': n_parameters}
             for i in range(len(data_loader_val)):
-                print(f"{type(dataset_val[i]).__name__}'s acc: {max_accuracy[i]}",end=" ")
-            print("")
+                print(f"{type(dataset_val[i]).__name__}'s acc: {max_accuracy[i]:.3f}",end=" ")
+            print("\n"+f"Average acc: {max_accuracy[:-1].mean()}")
         else:
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          # **{f'test_{k}': v for k, v in test_stats.items()},

@@ -39,8 +39,8 @@ def get_args():
     parser.add_argument('--img_path', type=str, help='input image path', default='/home/zhongtao/datasets/CelebAMask-HQ/')
     parser.add_argument('--save_path', type=str, help='save image path', default='./output')
     parser.add_argument('--model_path', type=str, help='checkpoint path of model',
-                        default="/home/zhongtao/mae_pretrain_checkpoint.pth")
-    parser.add_argument('--img_name', type=str, default='10001.jpg')
+                        default="/home/zhongtao/code/RDIFER/mae_pretrain_checkpoint.pth")
+    parser.add_argument('--img_name', type=str, default='12223.jpg')
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size for backbone')
     parser.add_argument('--device', default='cuda:0',
@@ -49,7 +49,7 @@ def get_args():
     parser.add_argument('--mask_ratio', default=0.75, type=float,
                         help='ratio of the visual tokens/patches need be masked')
     # Model parameters
-    parser.add_argument('--model', default='pretrain_mae_base_patch16_224_parsing_mask', type=str, metavar='MODEL',
+    parser.add_argument('--model', default="pretrain_mae_base_patch16_224_parsing_mask", type=str, metavar='MODEL',
                         help='Name of model to vis')
     parser.add_argument('--drop_path', type=float, default=0.0, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
@@ -67,7 +67,6 @@ def get_model(args):
     )
 
     return model
-
 
 def main(args):
     print(args)

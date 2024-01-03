@@ -29,18 +29,19 @@ from timm.models import create_model
 import utils
 import modeling_pretrain
 from datasets import DataAugmentationForMAE
-
+from torchvision import transforms as transforms
 from torchvision.transforms import ToPILImage
 from einops import rearrange
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-import reconstruct_model_2
 
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
+import modeling_pretrain_attnmask
 def get_args():
     parser = argparse.ArgumentParser('MAE visualization reconstruction script', add_help=False)
-    parser.add_argument('--img_path', type=str, help='input image path', default='../test.png')
+    parser.add_argument('--img_path', type=str, help='input image path', default="/home/zhongtao/datasets/CelebAMask-HQ/")
     parser.add_argument('--save_path', type=str, help='save image path', default='../output')
-    parser.add_argument('--model_path', type=str, help='checkpoint path of model', default="/home/zhongtao/mae_pretrain_checkpoint.pth")
-
+    parser.add_argument('--model_path', type=str, help='checkpoint path of model',
+                        default="/home/zhongtao/code/RDIFER/200w_pretrained_checkpoints_v4/checkpoint-149.pth")
+    parser.add_argument('--img_name', type=str, default='309.jpg')
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size for backbone')
     parser.add_argument('--device', default='cuda:0',
@@ -49,11 +50,11 @@ def get_args():
     parser.add_argument('--mask_ratio', default=0.75, type=float,
                         help='ratio of the visual tokens/patches need be masked')
     # Model parameters
-    parser.add_argument('--model', default='pretrain_mae_base_patch16_224_parsing_mask', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='pretrain_mae_base_patch16_224', type=str, metavar='MODEL',
                         help='Name of model to vis')
     parser.add_argument('--drop_path', type=float, default=0.0, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
-    
+
     return parser.parse_args()
 
 
@@ -86,24 +87,31 @@ def main(args):
     model.load_state_dict(checkpoint['model'])
     model.eval()
 
-    with open(args.img_path, 'rb') as f:
+    with open(os.path.join(args.img_path+"CelebA-HQ-img", args.img_name), 'rb') as f:
         img = Image.open(f)
-        img.convert('RGB')
+        img = img.convert('RGB')
         print("img path:", args.img_path)
 
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
 
-    transforms = DataAugmentationForMAE(args)
-    img, bool_masked_pos = transforms(img)
-    bool_masked_pos = torch.from_numpy(bool_masked_pos)
+    mean = IMAGENET_INCEPTION_MEAN if not args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_MEAN
+    std = IMAGENET_INCEPTION_STD if not args.imagenet_default_mean_and_std else IMAGENET_DEFAULT_STD
+
+    transform = transforms.Compose([
+        transforms.Resize([args.input_size, args.input_size]),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=torch.tensor(mean),
+            std=torch.tensor(std))
+    ])
+    img= transform(img)
 
     with torch.no_grad():
         img = img[None, :]
-        bool_masked_pos = bool_masked_pos[None, :]
         img = img.to(device, non_blocking=True)
+        outputs, bool_masked_pos, _  = model(img)
         bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
-        outputs = model(img, bool_masked_pos)
 
         #save original img
         mean = torch.as_tensor(IMAGENET_DEFAULT_MEAN).to(device)[None, :, None, None]
